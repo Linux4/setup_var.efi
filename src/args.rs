@@ -3,9 +3,11 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::{mem, slice};
 use core::fmt::{Display, Formatter};
 
 use uefi::{
+    data_types::chars::NUL_16,
     data_types::EqStrUntilNul,
     prelude::BootServices,
     proto::loaded_image::{LoadOptionsError, LoadedImage},
@@ -155,9 +157,21 @@ pub(crate) fn parse_args(boot_services: &BootServices) -> Result<Args, ParseErro
         .open_protocol_exclusive::<LoadedImage>(boot_services.image_handle())
         .map_err(|_| ParseError::LoadedImageProtocolError)?;
 
-    let options = loaded_image
-        .load_options_as_cstr16()
-        .map_err(ParseError::LoadOptionsError)?;
+    let options_bytes = loaded_image.load_options_as_bytes().unwrap();
+    let mut options_u16 = unsafe { slice::from_raw_parts(options_bytes.as_ptr().cast::<u16>(), options_bytes.len() / mem::size_of::<u16>()) };
+    let mut end = options_u16.len();
+    for (pos, &code) in options_u16.iter().enumerate() {
+        match code.try_into() {
+            Ok(NUL_16) => {
+                end = pos + 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+    // Cut off the part after the 'InteriorNul'
+    options_u16 = unsafe { slice::from_raw_parts(options_u16.as_ptr().cast::<u16>(), end) };
+    let options = unsafe { CStr16::from_u16_with_nul_unchecked(options_u16) };
 
     parse_args_from_str(options)
 }
